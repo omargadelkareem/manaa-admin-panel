@@ -1,0 +1,251 @@
+﻿import {
+  get,
+  onValue,
+  push,
+  ref,
+  remove,
+  set,
+  update,
+} from "firebase/database";
+
+import { database } from "./firebase.js";
+
+const LOCATIONS_PATH = "attendance_locations";
+const EMPLOYEES_PATH = "employees";
+
+function normalizeLocation(firebaseKey, data = {}) {
+  return {
+    ...data,
+    firebaseKey,
+    latitude: Number(data.latitude),
+    longitude: Number(data.longitude),
+    radius: Number(data.radius || 500),
+    is_active: data.is_active !== false,
+  };
+}
+
+export function subscribeToAttendanceLocations(
+  callback,
+  onError
+) {
+  return onValue(
+    ref(database, LOCATIONS_PATH),
+    (snapshot) => {
+      const data = snapshot.val();
+
+      if (!data) {
+        callback([]);
+        return;
+      }
+
+      const locations = Object.entries(data)
+        .map(([firebaseKey, value]) =>
+          normalizeLocation(firebaseKey, value)
+        )
+        .sort((a, b) =>
+          String(a.name || "").localeCompare(
+            String(b.name || ""),
+            "ar"
+          )
+        );
+
+      callback(locations);
+    },
+    onError
+  );
+}
+
+export async function getAttendanceLocations() {
+  const snapshot = await get(
+    ref(database, LOCATIONS_PATH)
+  );
+
+  if (!snapshot.exists()) {
+    return [];
+  }
+
+  return Object.entries(snapshot.val()).map(
+    ([firebaseKey, value]) =>
+      normalizeLocation(firebaseKey, value)
+  );
+}
+
+export async function createAttendanceLocation({
+  name,
+  latitude,
+  longitude,
+  radius,
+}) {
+  const newRef = push(
+    ref(database, LOCATIONS_PATH)
+  );
+
+  const now = Date.now();
+
+  const payload = {
+    name: String(name || "").trim(),
+    latitude: Number(latitude),
+    longitude: Number(longitude),
+    radius: Number(radius || 500),
+    is_active: true,
+    created_at: now,
+    updated_at: now,
+  };
+
+  await set(newRef, payload);
+
+  return {
+    firebaseKey: newRef.key,
+    ...payload,
+  };
+}
+
+export async function updateAttendanceLocation(
+  locationId,
+  values
+) {
+  if (!locationId) {
+    throw new Error("Location ID is required.");
+  }
+
+  const updates = {
+    ...values,
+    updated_at: Date.now(),
+  };
+
+  if (values.latitude !== undefined) {
+    updates.latitude = Number(values.latitude);
+  }
+
+  if (values.longitude !== undefined) {
+    updates.longitude = Number(values.longitude);
+  }
+
+  if (values.radius !== undefined) {
+    updates.radius = Number(values.radius);
+  }
+
+  await update(
+    ref(
+      database,
+      `${LOCATIONS_PATH}/${locationId}`
+    ),
+    updates
+  );
+}
+
+export async function toggleAttendanceLocation(
+  locationId,
+  isActive
+) {
+  await updateAttendanceLocation(
+    locationId,
+    {
+      is_active: Boolean(isActive),
+    }
+  );
+}
+
+export async function assignLocationToEmployee(
+  employeeFirebaseKey,
+  locationId
+) {
+  if (!employeeFirebaseKey) {
+    throw new Error(
+      "Employee Firebase key is required."
+    );
+  }
+
+  await update(
+    ref(
+      database,
+      `${EMPLOYEES_PATH}/${employeeFirebaseKey}`
+    ),
+    {
+      attendance_location_id:
+        locationId || null,
+      updated_at: Date.now(),
+    }
+  );
+}
+
+export async function assignLocationToEmployees(
+  employeeFirebaseKeys,
+  locationId
+) {
+  if (
+    !Array.isArray(employeeFirebaseKeys) ||
+    employeeFirebaseKeys.length === 0
+  ) {
+    return;
+  }
+
+  const now = Date.now();
+  const updates = {};
+
+  employeeFirebaseKeys.forEach(
+    (employeeFirebaseKey) => {
+      updates[
+        `${EMPLOYEES_PATH}/${employeeFirebaseKey}/attendance_location_id`
+      ] = locationId || null;
+
+      updates[
+        `${EMPLOYEES_PATH}/${employeeFirebaseKey}/updated_at`
+      ] = now;
+    }
+  );
+
+  await update(
+    ref(database),
+    updates
+  );
+}
+
+export async function deleteAttendanceLocation(
+  locationId
+) {
+  const employeesSnapshot = await get(
+    ref(database, EMPLOYEES_PATH)
+  );
+
+  if (employeesSnapshot.exists()) {
+    const employees =
+      employeesSnapshot.val();
+
+    const updates = {};
+
+    Object.entries(employees).forEach(
+      ([employeeKey, employee]) => {
+        if (
+          String(
+            employee.attendance_location_id || ""
+          ) === String(locationId)
+        ) {
+          updates[
+            `${EMPLOYEES_PATH}/${employeeKey}/attendance_location_id`
+          ] = null;
+
+          updates[
+            `${EMPLOYEES_PATH}/${employeeKey}/updated_at`
+          ] = Date.now();
+        }
+      }
+    );
+
+    if (
+      Object.keys(updates).length > 0
+    ) {
+      await update(
+        ref(database),
+        updates
+      );
+    }
+  }
+
+  await remove(
+    ref(
+      database,
+      `${LOCATIONS_PATH}/${locationId}`
+    )
+  );
+}

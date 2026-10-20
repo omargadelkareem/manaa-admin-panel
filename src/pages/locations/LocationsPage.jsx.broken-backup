@@ -1,0 +1,98 @@
+﻿import { useEffect, useMemo, useState } from "react";
+import { Building2, Check, Edit3, LocateFixed, MapPin, Save, Search, Trash2, UserRound, Users, X } from "lucide-react";
+import { Circle, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import PageHeader from "../../components/layout/PageHeader.jsx";
+import LoadingScreen from "../../components/common/LoadingScreen.jsx";
+import EmptyState from "../../components/common/EmptyState.jsx";
+import { subscribeToEmployees } from "../../services/firebase/employees.service.js";
+import { assignLocationToEmployees, createAttendanceLocation, deleteAttendanceLocation, subscribeToAttendanceLocations, updateAttendanceLocation } from "../../services/firebase/attendanceLocations.service.js";
+
+const RIYADH_CENTER = [24.7136, 46.6753];
+const DEFAULT_RADIUS = 500;
+const markerIcon = new L.Icon({
+  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+  iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41],
+});
+
+function employeeBranch(e) {
+  return String(e?.work_area || e?.current_location_name || e?.department_name || "").trim();
+}
+function MapClick({ onChange }) {
+  useMapEvents({ click: (e) => onChange(e.latlng.lat, e.latlng.lng) });
+  return null;
+}
+function MapFocus({ lat, lng }) {
+  const map = useMap();
+  useEffect(() => { if (lat != null && lng != null) map.flyTo([lat, lng], 16, { duration: .5 }); }, [lat, lng, map]);
+  return null;
+}
+
+export default function LocationsPage() {
+  const [locations, setLocations] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [readyL, setReadyL] = useState(false);
+  const [readyE, setReadyE] = useState(false);
+  const [mode, setMode] = useState("branch");
+  const [branch, setBranch] = useState("");
+  const [employeeKey, setEmployeeKey] = useState("");
+  const [employeeSearch, setEmployeeSearch] = useState("");
+  const [name, setName] = useState("");
+  const [lat, setLat] = useState(null);
+  const [lng, setLng] = useState(null);
+  const [radius, setRadius] = useState(DEFAULT_RADIUS);
+  const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    const a = subscribeToAttendanceLocations(d => { setLocations(d); setReadyL(true); }, e => { setError(e.message); setReadyL(true); });
+    const b = subscribeToEmployees(d => { setEmployees(d); setReadyE(true); }, e => { setError(e.message); setReadyE(true); });
+    return () => { a(); b(); };
+  }, []);
+
+  const branches = useMemo(() => {
+    const m = new Map();
+    employees.forEach(e => { const b = employeeBranch(e); if (b) m.set(b, (m.get(b) || 0) + 1); });
+    return [...m.entries()].map(([name, count]) => ({ name, count })).sort((a,b) => a.name.localeCompare(b.name, "ar"));
+  }, [employees]);
+  const branchEmployees = useMemo(() => employees.filter(e => employeeBranch(e) === branch), [employees, branch]);
+  const filteredEmployees = useMemo(() => {
+    const q = employeeSearch.trim().toLowerCase();
+    return employees.filter(e => !q || [e.name,e.emp_code,e.position_name,employeeBranch(e)].some(v => String(v||"").toLowerCase().includes(q)));
+  }, [employees, employeeSearch]);
+  const selectedEmployee = employees.find(e => String(e.firebaseKey) === String(employeeKey));
+  const targetEmployees = mode === "branch" ? branchEmployees : (selectedEmployee ? [selectedEmployee] : []);
+  const filteredLocations = locations.filter(l => String(l.name || "").toLowerCase().includes(search.trim().toLowerCase()));
+
+  function resetForm() {
+    setEditingId(null); setName(""); setLat(null); setLng(null); setRadius(DEFAULT_RADIUS);
+    setMode("branch"); setBranch(""); setEmployeeKey(""); setEmployeeSearch(""); setMessage(""); setError("");
+  }
+  function useCurrentLocation() {
+    if (!navigator.geolocation) return setError("المتصفح لا يدعم تحديد الموقع.");
+    navigator.geolocation.getCurrentPosition(p => { setLat(p.coords.latitude); setLng(p.coords.longitude); }, () => setError("تعذر تحديد موقعك. اختر الموقع من الخريطة."), { enableHighAccuracy: true, timeout: 12000 });
+  }
+  function editLocation(location) {
+    setEditingId(location.firebaseKey); setName(location.name || ""); setLat(Number(location.latitude)); setLng(Number(location.longitude)); setRadius(Number(location.radius || DEFAULT_RADIUS));
+    const assigned = employees.filter(e => String(e.attendance_location_id || "") === String(location.firebaseKey));
+    if (assigned.length) {
+      const bs = [...new Set(assigned.map(employeeBranch).filter(Boolean))];
+      if (bs.length === 1 && employees.filter(e => employeeBranch(e) === bs[0]).every(e => assigned.some(a => a.firebaseKey === e.firebaseKey))) { setMode("branch"); setBranch(bs[0]); setEmployeeKey(""); }
+      else { setMode("employee"); setEmployeeKey(assigned[0]?.firebaseKey || ""); setBranch(""); }
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  async function save() {
+    setMessage(""); setError("");
+    if (!name.trim()) return setError("اكتب اسم موقع البصمة.");
+    if (lat == null || lng == null) return setError("حدد الموقع على الخريطة.");
+    if (!targetEmployees.length) return setError(mode === "branch" ? "اختر الفرع." : "اختر الموظف.");
+    if (!Number.isFinite(Number(radius)) || Number(radius) < 20) return setError("نطاق البصمة يجب ألا يقل عن 20 متر.")
+
+    }}
